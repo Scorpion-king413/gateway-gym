@@ -9,35 +9,48 @@ import base64
 # python -m streamlit run main.py (Opens program)
 # ----------------------------
 
-
 # ----------------------------
 # FILE PATHS
 # ----------------------------
 ROSTER_FILE = "roster.csv"
 ATTENDANCE_FILE = "attendance.csv"
+HEALTH_FILE = "health.csv"
 
 # ----------------------------
-# SESSION STATE INIT
+# SAFE LOAD FUNCTION (fixes empty csv crash)
+# ----------------------------
+def load_csv_safe(path, columns):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        df = pd.DataFrame(columns=columns)
+        df.to_csv(path, index=False)
+        return df
+
+    try:
+        return pd.read_csv(path, dtype={"ID": str})
+    except pd.errors.EmptyDataError:
+        df = pd.DataFrame(columns=columns)
+        df.to_csv(path, index=False)
+        return df
+
+# ----------------------------
+# INIT SESSION STATE
 # ----------------------------
 if "roster_df" not in st.session_state:
-    if os.path.exists(ROSTER_FILE):
-        st.session_state.roster_df = pd.read_csv(ROSTER_FILE, dtype={"ID": str})
-    else:
-        st.session_state.roster_df = pd.DataFrame(columns=["ID", "Name"])
-        st.session_state.roster_df.to_csv(ROSTER_FILE, index=False)
+    st.session_state.roster_df = load_csv_safe(ROSTER_FILE, ["ID", "Name"])
 
 if "attendance_df" not in st.session_state:
-    if os.path.exists(ATTENDANCE_FILE):
-        st.session_state.attendance_df = pd.read_csv(ATTENDANCE_FILE, dtype={"ID": str})
-    else:
-        st.session_state.attendance_df = pd.DataFrame(columns=["ID", "Name", "Action", "Timestamp"])
-        st.session_state.attendance_df.to_csv(ATTENDANCE_FILE, index=False)
+    st.session_state.attendance_df = load_csv_safe(
+        ATTENDANCE_FILE, ["ID", "Name", "Action", "Timestamp"]
+    )
+
+if "health_df" not in st.session_state:
+    st.session_state.health_df = load_csv_safe(HEALTH_FILE, ["ID", "Health"])
 
 if "admin_authenticated" not in st.session_state:
     st.session_state.admin_authenticated = False
 
 # ----------------------------
-# HELPER FUNCTIONS
+# SAVE FUNCTIONS
 # ----------------------------
 def save_roster():
     st.session_state.roster_df.to_csv(ROSTER_FILE, index=False)
@@ -45,146 +58,224 @@ def save_roster():
 def save_attendance():
     st.session_state.attendance_df.to_csv(ATTENDANCE_FILE, index=False)
 
+def save_health():
+    st.session_state.health_df = st.session_state.health_df.drop_duplicates(
+        subset=["ID"], keep="last"
+    )
+    st.session_state.health_df.to_csv(HEALTH_FILE, index=False)
+
 def get_last_action(user_id):
-    df = st.session_state.attendance_df
-    logs = df[df["ID"] == user_id]
+    logs = st.session_state.attendance_df[
+        st.session_state.attendance_df["ID"] == user_id
+    ]
     if logs.empty:
         return None
     return logs.iloc[-1]["Action"]
 
 # ----------------------------
-# TITLE WITH LOGO AND CREATOR
+# TITLE
 # ----------------------------
-
-# Centered title and subtitle
 st.markdown(
-    """
-    <h1 style='text-align: center; font-size: 36px; white-space: nowrap;'>
-        Gateway Sign-In / Sign-Out Sheet
-    </h1>
-    <p style='text-align: center; font-size: 14px; color: gray;'>
-        By: Ismael Perez from the Gateway CS Club
-    </p>
-    """,
-    unsafe_allow_html=True
-)
-
-# Load logo and encode it as Base64
-with open("static/CSC logo.png", "rb") as image_file:
-    encoded_logo = base64.b64encode(image_file.read()).decode()
-
-# Display logo perfectly centered
-st.markdown(
-    f"""
-    <div style="text-align: center; margin-top: 10px;">
-        <img src="data:image/png;base64,{encoded_logo}" width="120">
-    </div>
-    """,
+    "<h1 style='text-align:center;'>Gateway Sign-In / Sign-Out Sheet</h1>",
     unsafe_allow_html=True
 )
 
 # ----------------------------
-# SCAN FORM
+# SCAN
 # ----------------------------
 st.header("Scan or Enter ID")
-with st.form("scan_form"):
-    scan_input = st.text_input("Scan ID (keep leading zeros)")
-    submit_scan = st.form_submit_button("Submit")
 
-if submit_scan:
-    user_id = str(scan_input.strip())
-    roster_dict = dict(zip(st.session_state.roster_df["ID"], st.session_state.roster_df["Name"]))
-    
-    if user_id in roster_dict:
-        name = roster_dict[user_id]
-        last_action = get_last_action(user_id)
-        action = "OUT" if last_action == "IN" else "IN"
-        
-        # Get current time in US Eastern in 12-hour AM/PM format
-        eastern = pytz.timezone("US/Eastern")
-        current_time = datetime.now(eastern).strftime("%Y-%m-%d %I:%M:%S %p")
-        
-        new_entry = {"ID": user_id, "Name": name, "Action": action, "Timestamp": current_time}
-        st.session_state.attendance_df = pd.concat([st.session_state.attendance_df, pd.DataFrame([new_entry])], ignore_index=True)
-        save_attendance()
-        st.success(f"{name} checked {action} at {current_time}")
+with st.form("scan_form"):
+    scan_input = st.text_input("Scan ID")
+    submit = st.form_submit_button("Submit")
+
+if submit:
+    user_id = scan_input.strip()
+
+    roster = st.session_state.roster_df
+    match = roster[roster["ID"] == user_id]
+
+    if match.empty:
+        st.warning("ID not found in roster")
     else:
-        st.warning("ID not found. Admin must add user.")
+        name = match.iloc[0]["Name"]
+
+        # health lookup (separate file)
+        health_match = st.session_state.health_df[
+            st.session_state.health_df["ID"] == user_id
+        ]
+
+        health_note = ""
+        if not health_match.empty:
+            health_note = health_match.iloc[0]["Health"]
+
+        last = get_last_action(user_id)
+        action = "OUT" if last == "IN" else "IN"
+
+        time = datetime.now(pytz.timezone("US/Eastern"))
+
+        new_row = {
+            "ID": user_id,
+            "Name": name,
+            "Action": action,
+            "Timestamp": time
+        }
+
+        st.session_state.attendance_df = pd.concat(
+            [st.session_state.attendance_df, pd.DataFrame([new_row])],
+            ignore_index=True
+        )
+
+        save_attendance()
+
+        st.success(f"{name} checked {action}")
+
+        if health_note:
+            st.warning(f"⚠️ Health Note: {health_note}")
 
 # ----------------------------
-# ATTENDANCE LOG WITH DELETE BUTTONS
+# ATTENDANCE LOG
 # ----------------------------
 st.header("📊 Attendance Log")
-df = st.session_state.attendance_df.copy()
+
+df = st.session_state.attendance_df
+
 if not df.empty:
-    rows_to_keep = []
-    for idx, row in df.iterrows():
-        cols = st.columns([1, 2, 1, 1, 1])
+    display = df.iloc[::-1].reset_index()
+    keep = set(df.index)
+
+    for _, row in display.iterrows():
+        idx = row["index"]
+
+        cols = st.columns([1,2,1,2,1])
         cols[0].write(row["ID"])
         cols[1].write(row["Name"])
         cols[2].write(row["Action"])
         cols[3].write(row["Timestamp"])
-        delete_clicked = cols[4].button("Delete", key=f"delete_att_{idx}")
-        if not delete_clicked:
-            rows_to_keep.append(idx)
 
-    st.session_state.attendance_df = st.session_state.attendance_df.loc[rows_to_keep].reset_index(drop=True)
+        if cols[4].button("Delete", key=f"att_{idx}"):
+            keep.discard(idx)
+
+    st.session_state.attendance_df = df.loc[list(keep)].reset_index(drop=True)
     save_attendance()
-else:
-    st.write("Attendance log is empty.")
 
 # ----------------------------
 # ADMIN LOGIN
 # ----------------------------
-st.header("🔐 Admin Panel")
-with st.form("login_form"):
-    password = st.text_input("Enter Admin Password", type="password")
-    login_btn = st.form_submit_button("Login")
+st.header("🔐 Admin")
 
-if login_btn:
-    if password == "123456":
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "123456")
+
+with st.form("login"):
+    pw = st.text_input("Password", type="password")
+    login = st.form_submit_button("Login")
+
+if login:
+    if pw == ADMIN_PASSWORD:
         st.session_state.admin_authenticated = True
-        st.success("Logged in as admin")
+        st.success("Logged in")
     else:
-        st.error("Incorrect password")
+        st.error("Wrong password")
 
 # ----------------------------
-# ADMIN FUNCTIONS (Roster as table with delete)
+# ADMIN PANEL
 # ----------------------------
 if st.session_state.admin_authenticated:
-    st.subheader("Current Roster")
-    roster_df = st.session_state.roster_df.copy()
-    if not roster_df.empty:
-        rows_to_keep = []
-        for idx, row in roster_df.iterrows():
-            cols = st.columns([2, 3, 1])
-            cols[0].write(row["ID"])
-            cols[1].write(row["Name"])
-            delete_clicked = cols[2].button("Delete", key=f"delete_roster_{idx}")
-            if not delete_clicked:
-                rows_to_keep.append(idx)
-        st.session_state.roster_df = st.session_state.roster_df.loc[rows_to_keep].reset_index(drop=True)
-        save_roster()
-    else:
-        st.write("Roster is empty.")
 
-    st.subheader("Add New Person")
-    with st.form("add_user_form"):
-        new_id = st.text_input("New ID (keep leading zeros)")
-        new_name = st.text_input("Full Name")
-        add_btn = st.form_submit_button("Add Person")
+    # -------- ROSTER --------
+    st.subheader("Roster")
 
-    if add_btn:
-        new_id = str(new_id.strip())
-        if new_id in st.session_state.roster_df["ID"].values:
-            st.error("ID already exists!")
+    roster = st.session_state.roster_df.copy()
+    keep = []
+
+    for idx, row in roster.iterrows():
+        cols = st.columns([2,3,1])
+
+        cols[0].write(row["ID"])
+        cols[1].write(row["Name"])
+
+        if cols[2].button("Delete", key=f"roster_{idx}"):
+            continue
+        keep.append(idx)
+
+    st.session_state.roster_df = roster.loc[keep].reset_index(drop=True)
+    save_roster()
+
+    # ADD PERSON
+    st.subheader("Add Person")
+
+    with st.form("add_person"):
+        nid = st.text_input("ID")
+        name = st.text_input("Name")
+        add = st.form_submit_button("Add")
+
+    if add:
+        if nid and name:
+            if nid in st.session_state.roster_df["ID"].values:
+                st.error("ID exists")
+            else:
+                st.session_state.roster_df = pd.concat(
+                    [st.session_state.roster_df,
+                     pd.DataFrame([[nid,name]], columns=["ID","Name"])],
+                    ignore_index=True
+                )
+                save_roster()
+                st.success("Added")
         else:
-            st.session_state.roster_df = pd.concat(
-                [st.session_state.roster_df, pd.DataFrame([[new_id, new_name]], columns=["ID","Name"])],
+            st.error("Fill all fields")
+
+    # -------- HEALTH (SEPARATE SYSTEM) --------
+    st.subheader("🩺 Health Records")
+
+    health = st.session_state.health_df.copy()
+    keep = []
+
+    for idx, row in health.iterrows():
+        cols = st.columns([2,4,1])
+
+        cols[0].write(row["ID"])
+
+        new_note = cols[1].text_input(
+            "Health",
+            value=row["Health"],
+            key=f"health_{idx}"
+        )
+
+        st.session_state.health_df.loc[idx, "Health"] = new_note
+
+        if cols[2].button("Delete", key=f"health_del_{idx}"):
+            continue
+        keep.append(idx)
+
+    st.session_state.health_df = health.loc[keep].reset_index(drop=True)
+    save_health()
+
+    # ADD HEALTH NOTE
+    st.subheader("Add Health Note")
+
+    with st.form("add_health"):
+        hid = st.text_input("ID")
+        note = st.text_input("Health Note")
+        addh = st.form_submit_button("Add")
+
+    if addh:
+        if hid and note:
+            st.session_state.health_df = pd.concat(
+                [st.session_state.health_df,
+                 pd.DataFrame([[hid,note]], columns=["ID","Health"])],
                 ignore_index=True
             )
-            save_roster()
-            st.success(f"Added {new_name}")
+            save_health()
+            st.success("Health note added")
+        else:
+            st.error("Fill all fields")
+
+    # -------- DOWNLOAD --------
+    st.download_button(
+        "Download Attendance",
+        data=st.session_state.attendance_df.to_csv(index=False),
+        file_name="attendance.csv"
+    )
 
     if st.button("Logout"):
         st.session_state.admin_authenticated = False
