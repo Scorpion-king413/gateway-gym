@@ -29,7 +29,7 @@ cls
 echo.Starting server...
 echo.(Press CTRL+C to Stop)
 
-"%VENV_DIR%\Scripts\python.exe" -m streamlit run "main.py"
+"%VENV_DIR%\Scripts\python.exe" -m streamlit run "src/app.py"
 
 cls
 echo.Server stopped.
